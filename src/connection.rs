@@ -103,18 +103,28 @@ impl Connection {
                                 .start_send(tokio_tungstenite::tungstenite::Message::text(json_msg))
                             {
                                 Ok(_) => {
-                                    assert!(matches!(
-                                        self.pending_requests.insert(msg.reference, sender),
-                                        None
-                                    ));
+                                    if self
+                                        .pending_requests
+                                        .insert(msg.reference, sender)
+                                        .is_some()
+                                    {
+                                        log::error!("Replaced request with same ref");
+                                    }
                                 }
                                 Err(e) => {
-                                    let _ = sender.send(Err(RequestSendError::Send(e)));
+                                    if sender.send(Err(RequestSendError::Send(e))).is_err() {
+                                        log::debug!("Internal request channel receiver dropped");
+                                    }
                                 }
                             }
                         }
                         Err(e) => {
-                            let _ = sender.send(Err(RequestSendError::InvalidMessageOutJson(e)));
+                            if sender
+                                .send(Err(RequestSendError::InvalidMessageOutJson(e)))
+                                .is_err()
+                            {
+                                log::debug!("Internal request channel receiver dropped");
+                            }
                         }
                     }
 
@@ -164,9 +174,13 @@ impl Connection {
                                         Some(reference) => {
                                             match self.pending_requests.remove(reference) {
                                                 Some(sender) => {
-                                                    let _ = sender.send(Ok(msg));
+                                                    if sender.send(Ok(msg)).is_err() {
+                                                        log::debug!("Internal request channel receiver dropped");
+                                                    }
                                                 }
-                                                None => todo!(),
+                                                None => {
+                                                    log::debug!("Received response for a request that was not pending");
+                                                }
                                             }
                                         }
                                         None => {
@@ -179,7 +193,9 @@ impl Connection {
                                             }
                                         }
                                     },
-                                    Err(_) => todo!(),
+                                    Err(e) => {
+                                        log::debug!("Failed to deserialize response: {}", e);
+                                    }
                                 }
                             }
                             tokio_tungstenite::tungstenite::Message::Close(_) => todo!(),
