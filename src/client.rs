@@ -1,7 +1,7 @@
 use std::{collections::HashSet, marker::PhantomData, pin::Pin, task::Poll};
 
 use futures::Stream;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 use url::Url;
@@ -11,12 +11,27 @@ use crate::connection::{
     RequestSendError,
 };
 
+#[derive(Deserialize)]
+struct JoinPayloadResponse {
+    reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct JoinPayload {
+    status: String,
+    response: JoinPayloadResponse,
+}
+
 #[derive(Error, Debug)]
 pub enum SubscribeError {
     #[error("Connection closed")]
     ConnectionClosed,
     #[error("Request failed: {0}")]
     Request(RequestError),
+    #[error("Failed to deserialize payload: {0}")]
+    DeserializePayload(serde_json::Error),
+    #[error("Failed to join channel: {0}")]
+    Join(String),
 }
 
 #[derive(Error, Debug)]
@@ -69,7 +84,7 @@ impl Client {
             .map_err(|_| SubscribeError::ConnectionClosed)?;
 
         if !self.joined_topics.contains(topic) {
-            let _res = self
+            let res = self
                 .request(
                     topic.to_string(),
                     "phx_join".to_string(),
@@ -77,6 +92,15 @@ impl Client {
                 )
                 .await
                 .map_err(SubscribeError::Request)?;
+
+            let payload: JoinPayload =
+                serde_json::from_value(res.payload).map_err(SubscribeError::DeserializePayload)?;
+
+            if payload.status == "error" {
+                return Err(SubscribeError::Join(
+                    payload.response.reason.unwrap_or_default(),
+                ));
+            }
 
             self.joined_topics.insert(topic.to_string());
         }
