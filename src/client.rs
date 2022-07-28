@@ -7,8 +7,7 @@ use tokio::sync::{mpsc, oneshot};
 use url::Url;
 
 use crate::connection::{
-    Connection, ConnectionInternalRequest, ConnectionInternalSubscription, MessageIn, MessageOut,
-    RequestSendError,
+    Connection, ConnectionInternalRequest, ConnectionInternalSubscription, RequestSendError,
 };
 
 #[derive(Deserialize)]
@@ -28,8 +27,6 @@ pub enum SubscribeError {
     ConnectionClosed,
     #[error("Request failed: {0}")]
     Request(RequestError),
-    #[error("Failed to deserialize payload: {0}")]
-    DeserializePayload(serde_json::Error),
     #[error("Failed to join channel: {0}")]
     Join(String),
 }
@@ -44,13 +41,17 @@ pub enum RequestError {
     Send(RequestSendError),
     #[error("Failed to serialize payload: {0}")]
     SerializePayload(serde_json::Error),
+    #[error("Failed to deserialize payload: {0}")]
+    DeserializePayload(serde_json::Error),
 }
 
 pub struct Client {
-    conn_request_tx: mpsc::Sender<ConnectionInternalRequest>,
+    conn_request_tx: mpsc::Sender<(
+        ConnectionInternalRequest,
+        oneshot::Sender<Result<serde_json::Value, RequestSendError>>,
+    )>,
     conn_subscription_tx: mpsc::Sender<ConnectionInternalSubscription>,
     joined_topics: HashSet<String>,
-    reference: u64,
 }
 
 impl Client {
@@ -65,11 +66,12 @@ impl Client {
                 conn_request_tx,
                 conn_subscription_tx,
                 joined_topics: HashSet::new(),
-                reference: 0,
             },
             conn,
         ))
     }
+
+    pub fn close(self) {}
 
     pub async fn subscribe<T>(
         &mut self,
@@ -84,7 +86,7 @@ impl Client {
             .map_err(|_| SubscribeError::ConnectionClosed)?;
 
         if !self.joined_topics.contains(topic) {
-            let res = self
+            let payload: JoinPayload = self
                 .request(
                     topic.to_string(),
                     "phx_join".to_string(),
@@ -92,9 +94,6 @@ impl Client {
                 )
                 .await
                 .map_err(SubscribeError::Request)?;
-
-            let payload: JoinPayload =
-                serde_json::from_value(res.payload).map_err(SubscribeError::DeserializePayload)?;
 
             if payload.status == "error" {
                 return Err(SubscribeError::Join(
@@ -111,31 +110,31 @@ impl Client {
         })
     }
 
-    async fn request<T: Serialize>(
+    async fn request<P: Serialize, R: DeserializeOwned>(
         &mut self,
         topic: String,
         event: String,
-        payload: T,
-    ) -> Result<MessageIn, RequestError> {
-        let (tx, rx) = oneshot::channel();
+        payload: P,
+    ) -> Result<R, RequestError> {
+        let (response_tx, response_rx) = oneshot::channel();
 
-        let msg = MessageOut {
+        let req = ConnectionInternalRequest {
             topic,
             event,
             payload: serde_json::to_value(&payload).map_err(RequestError::SerializePayload)?,
-            reference: self.reference.to_string(),
         };
 
-        self.reference += 1;
-
         self.conn_request_tx
-            .send((msg, tx))
+            .send((req, response_tx))
             .await
             .map_err(|_| RequestError::ConnectionClosed)?;
 
-        rx.await
+        let payload = response_rx
+            .await
             .map_err(|_| RequestError::ConnectionClosed)?
-            .map_err(RequestError::Send)
+            .map_err(RequestError::Send)?;
+
+        serde_json::from_value(payload).map_err(RequestError::DeserializePayload)
     }
 }
 
