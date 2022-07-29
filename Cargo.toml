@@ -19,6 +19,7 @@ url = { version = "2", default-features = false }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+axum = { version = "0.5", features = ["ws"]}
 
 [[example]]
 name = "basics"
