@@ -1,4 +1,4 @@
-use std::{collections::HashSet, marker::PhantomData, pin::Pin, task::Poll};
+use std::{marker::PhantomData, pin::Pin, task::Poll};
 
 use futures::Stream;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -45,13 +45,13 @@ pub enum RequestError {
     DeserializePayload(serde_json::Error),
 }
 
+#[derive(Clone)]
 pub struct Client {
     conn_request_tx: mpsc::Sender<(
         ConnectionInternalRequest,
         oneshot::Sender<Result<serde_json::Value, RequestSendError>>,
     )>,
     conn_subscription_tx: mpsc::Sender<ConnectionInternalSubscription>,
-    joined_topics: HashSet<String>,
 }
 
 impl Client {
@@ -65,7 +65,6 @@ impl Client {
             Self {
                 conn_request_tx,
                 conn_subscription_tx,
-                joined_topics: HashSet::new(),
             },
             conn,
         ))
@@ -74,7 +73,7 @@ impl Client {
     pub fn close(self) {}
 
     pub async fn subscribe<T>(
-        &mut self,
+        &self,
         topic: &str,
         event: &str,
     ) -> Result<Subscription<T>, SubscribeError> {
@@ -85,23 +84,19 @@ impl Client {
             .await
             .map_err(|_| SubscribeError::ConnectionClosed)?;
 
-        if !self.joined_topics.contains(topic) {
-            let payload: JoinPayload = self
-                .request(
-                    topic.to_string(),
-                    "phx_join".to_string(),
-                    None as Option<()>,
-                )
-                .await
-                .map_err(SubscribeError::Request)?;
+        let payload: JoinPayload = self
+            .request(
+                topic.to_string(),
+                "phx_join".to_string(),
+                None as Option<()>,
+            )
+            .await
+            .map_err(SubscribeError::Request)?;
 
-            if payload.status == "error" {
-                return Err(SubscribeError::Join(
-                    payload.response.reason.unwrap_or_default(),
-                ));
-            }
-
-            self.joined_topics.insert(topic.to_string());
+        if payload.status == "error" {
+            return Err(SubscribeError::Join(
+                payload.response.reason.unwrap_or_default(),
+            ));
         }
 
         Ok(Subscription {
@@ -111,7 +106,7 @@ impl Client {
     }
 
     async fn request<P: Serialize, R: DeserializeOwned>(
-        &mut self,
+        &self,
         topic: String,
         event: String,
         payload: P,
