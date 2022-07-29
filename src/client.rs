@@ -135,7 +135,7 @@ impl Client {
 
 pub struct Subscription<T> {
     events_rx: mpsc::Receiver<serde_json::Value>,
-    _phantom_data: PhantomData<*const T>,
+    _phantom_data: PhantomData<fn() -> T>,
 }
 
 impl<T: DeserializeOwned> Stream for Subscription<T> {
